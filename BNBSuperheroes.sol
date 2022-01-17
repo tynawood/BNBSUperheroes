@@ -1,3 +1,7 @@
+/**
+ *Submitted for verification at BscScan.com on 2022-01-15
+*/
+
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.6.0 <0.9.0;
 
@@ -209,9 +213,6 @@ contract BNBSuperHeroes is Context, IERC20 {
     mapping (address => mapping (address => uint256)) private _allowances;
 
     mapping (address => bool) private _isExcludedFromFees;
-    mapping (address => bool) private _isExcluded;
-    address[] private _excluded;
-
     mapping (address => bool) private presaleAddresses;
     bool private allowedPresaleExclusion = true;
     mapping (address => bool) private _liquidityHolders;
@@ -222,9 +223,7 @@ contract BNBSuperHeroes is Context, IERC20 {
     string constant private _symbol = "BSH";
     uint8 constant private _decimals = 18;
 
-    uint256 constant private MAX = ~uint256(0);
     uint256 constant private _tTotal = startingSupply * 10**_decimals;
-    uint256 constant private _rTotal = (MAX - (MAX % _tTotal));
 
     struct Fees {
         uint16 buyFee;
@@ -242,7 +241,7 @@ contract BNBSuperHeroes is Context, IERC20 {
     struct Ratios {
         uint16 liquidity;
         uint16 marketing;
-        uint16 gamedev;
+        uint16 gameDev;
         uint16 buyback;
         uint16 total;
     }
@@ -256,7 +255,7 @@ contract BNBSuperHeroes is Context, IERC20 {
     Ratios public _ratios = Ratios({
         liquidity: 4,
         marketing: 3,
-        gamedev: 4,
+        gameDev: 4,
         buyback: 1,
         total: 12
         });
@@ -270,18 +269,21 @@ contract BNBSuperHeroes is Context, IERC20 {
 
     IUniswapV2Router02 public dexRouter;
     address public lpPair;
-
-    address public currentRouter;
-    // PCS ROUTER
-    address private pcsV2Router = 0x10ED43C718714eb63d5aA57B78B54704E256024E;
-    // UNI ROUTER
-    address private uniswapV2Router = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
-
     address constant public DEAD = 0x000000000000000000000000000000000000dEaD;
-    address payable public _marketingWallet = payable(0x277897fDAFA5FABFe9599b89b9F2B76aE6e43EAf);
-    address payable public _gameDevWallet = payable(0x7C57765420540D0Ba92fEA77982F68f93FB4db55);
-    address payable public _buybackWallet = payable (0x269ECF95fd06C59888282Acd2d634Fb3486782d7);
-    address public newLiquidityReceiver = 0x941C59b7c947F354BCe2F335453517CDb51CCfE3;
+
+    struct TaxWallets {
+        address payable marketing;
+        address payable gameDev;
+        address payable buyback;
+        address liquidityReceiver;
+    }
+
+    TaxWallets public _taxWallets = TaxWallets({
+        marketing: payable(0x277897fDAFA5FABFe9599b89b9F2B76aE6e43EAf),
+        gameDev: payable(0x7C57765420540D0Ba92fEA77982F68f93FB4db55),
+        buyback: payable(0x269ECF95fd06C59888282Acd2d634Fb3486782d7),
+        liquidityReceiver: 0x941C59b7c947F354BCe2F335453517CDb51CCfE3
+        });
     
     bool inSwap;
     bool public contractSwapEnabled = false;
@@ -295,11 +297,7 @@ contract BNBSuperHeroes is Context, IERC20 {
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event ContractSwapEnabledUpdated(bool enabled);
-    event SwapAndLiquify(
-        uint256 tokensSwapped,
-        uint256 ethReceived,
-        uint256 tokensIntoLiqudity
-    );
+    event AutoLiquify(uint256 amountCurrency, uint256 amountTokens);
     
     modifier lockTheSwap {
         inSwap = true;
@@ -318,18 +316,21 @@ contract BNBSuperHeroes is Context, IERC20 {
         // Set the owner.
         _owner = msg.sender;
 
-        if (block.chainid == 56 || block.chainid == 97) {
-            currentRouter = pcsV2Router;
-        } else if (block.chainid == 1) {
-            currentRouter = uniswapV2Router;
+        if (block.chainid == 56) {
+            dexRouter = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        } else if (block.chainid == 97) {
+            dexRouter = IUniswapV2Router02(0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3);
+        } else if (block.chainid == 1 || block.chainid == 4) {
+            dexRouter = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
+        } else {
+            revert();
         }
 
-        dexRouter = IUniswapV2Router02(currentRouter);
         lpPair = IUniswapV2Factory(dexRouter.factory()).createPair(dexRouter.WETH(), address(this));
         lpPairs[lpPair] = true;
 
-        _approve(msg.sender, currentRouter, type(uint256).max);
-        _approve(address(this), currentRouter, type(uint256).max);
+        _approve(msg.sender, address(dexRouter), type(uint256).max);
+        _approve(address(this), address(dexRouter), type(uint256).max);
 
         _isExcludedFromFees[owner()] = true;
         _isExcludedFromFees[address(this)] = true;
@@ -374,8 +375,8 @@ contract BNBSuperHeroes is Context, IERC20 {
 //===============================================================================================================
 //===============================================================================================================
 
-    function totalSupply() external view override returns (uint256) { return _tTotal; }
-    function decimals() external view override returns (uint8) { return _decimals; }
+    function totalSupply() external pure override returns (uint256) { return _tTotal; }
+    function decimals() external pure override returns (uint8) { return _decimals; }
     function symbol() external pure override returns (string memory) { return _symbol; }
     function name() external pure override returns (string memory) { return _name; }
     function getOwner() external view override returns (address) { return owner(); }
@@ -453,10 +454,6 @@ contract BNBSuperHeroes is Context, IERC20 {
         }
     }
 
-    function getCirculatingSupply() public view returns (uint256) {
-        return (_tTotal - (balanceOf(DEAD) + balanceOf(address(0))));
-    }
-
     function isExcludedFromFees(address account) public view returns(bool) {
         return _isExcludedFromFees[account];
     }
@@ -509,7 +506,7 @@ contract BNBSuperHeroes is Context, IERC20 {
     function setRatios(uint16 liquidity, uint16 marketing, uint16 gamedev, uint16 buyback) external onlyOwner {
         _ratios.liquidity = liquidity;
         _ratios.marketing = marketing;
-        _ratios.gamedev = gamedev;
+        _ratios.gameDev = gamedev;
         _ratios.buyback = buyback;
         _ratios.total = liquidity + marketing + gamedev + buyback;
     }
@@ -520,14 +517,14 @@ contract BNBSuperHeroes is Context, IERC20 {
     }
 
     function setWallets(address payable marketing, address payable gamedev, address payable buyback) external onlyOwner {
-        _marketingWallet = payable(marketing);
-        _gameDevWallet = payable(gamedev);
-        _buybackWallet = payable(buyback);
+        _taxWallets.marketing = payable(marketing);
+        _taxWallets.gameDev = payable(gamedev);
+        _taxWallets.buyback = payable(buyback);
     }
 
     function setLiquidityReceiver(address account) external onlyOwner {
-        require(newLiquidityReceiver != address(0), "Cannot change back after setting to burn.");
-        newLiquidityReceiver = account;
+        require(_taxWallets.liquidityReceiver != address(0), "Cannot change back after setting to burn.");
+        _taxWallets.liquidityReceiver = account;
     }
 
     function setContractSwapEnabled(bool _enabled) public onlyOwner {
@@ -593,33 +590,32 @@ contract BNBSuperHeroes is Context, IERC20 {
     }
 
     function contractSwap(uint256 contractTokenBalance) private lockTheSwap {
-        uint16 total = _ratios.total;
-        if (total == 0) {
+        Ratios memory ratios = _ratios;
+        if (ratios.total == 0) {
             return;
         }
-        uint16 liquidity = _ratios.liquidity;
 
         if(_allowances[address(this)][address(dexRouter)] != type(uint256).max) {
             _allowances[address(this)][address(dexRouter)] = type(uint256).max;
         }
 
-        uint256 toLiquify = ((contractTokenBalance * liquidity) / total) / 2;
-
-        uint256 toSwapForEth = contractTokenBalance - toLiquify;
+        uint256 toLiquify = ((contractTokenBalance * ratios.liquidity) / ratios.total) / 2;
+        uint256 swapAmt = contractTokenBalance - toLiquify;
         
         address[] memory path = new address[](2);
         path[0] = address(this);
         path[1] = dexRouter.WETH();
 
         dexRouter.swapExactTokensForETHSupportingFeeOnTransferTokens(
-            toSwapForEth,
+            swapAmt,
             0,
             path,
             address(this),
             block.timestamp
         );
 
-        uint256 liquidityBalance = (address(this).balance * toLiquify) / toSwapForEth;
+        uint256 amtBalance = address(this).balance;
+        uint256 liquidityBalance = (amtBalance * toLiquify) / swapAmt;
 
         if (toLiquify > 0) {
             dexRouter.addLiquidityETH{value: liquidityBalance}(
@@ -627,13 +623,25 @@ contract BNBSuperHeroes is Context, IERC20 {
                 toLiquify,
                 0,
                 0,
-                DEAD,
+                _taxWallets.liquidityReceiver,
                 block.timestamp
             );
-            emit SwapAndLiquify(toLiquify, liquidityBalance, toLiquify);
+            emit AutoLiquify(liquidityBalance, toLiquify);
         }
-        if (address(this).balance > 0 && total - liquidity > 0) {
-            _taxWallets.marketing.transfer(address(this).balance);
+
+        amtBalance -= liquidityBalance;
+        ratios.total -= ratios.liquidity;
+        uint256 gameDevBalance = (amtBalance * ratios.gameDev) / ratios.total;
+        uint256 buybackBalance = (amtBalance * ratios.buyback) / ratios.total;
+        uint256 marketingBalance = amtBalance - (gameDevBalance + buybackBalance);
+        if (gameDevBalance > 0) {
+            _taxWallets.gameDev.transfer(gameDevBalance);
+        }
+        if (buybackBalance > 0) {
+            _taxWallets.buyback.transfer(buybackBalance);
+        }
+        if (marketingBalance > 0) {
+            _taxWallets.marketing.transfer(marketingBalance);
         }
     }
 
